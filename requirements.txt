@@ -3,3 +3,4 @@ python-dotenv>=1.0.1
 requests>=2.32
 langdetect>=1.0.9
 llama-cloud-services>=0.1.0
+markdown>=3.6

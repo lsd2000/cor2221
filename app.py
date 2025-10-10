@@ -3,6 +3,19 @@ import os
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
+import markdown as md
+
+# app.py (top imports)
+from flows.remittance_flow import (
+    is_remittance_intent, reset_remittance_state, handle_remittance_turn
+)
+from flows.financial_flow import (
+    is_financial_intent, reset_financial_state, handle_financial_turn
+)
+
+from flows.scam_flow import (
+    is_scam_intent, reset_scam_state, handle_scam_turn
+)
 
 from rag_backend import answer_query  # backend function
 
@@ -30,9 +43,80 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# app.py (top) – after set_page_config and before rendering
+# Runner: if a backend call is pending, do it now (after we've already shown the loader on the previous run)
+if st.session_state.get("run_backend"):
+    st.session_state.run_backend = False
+
+    # Plain Q&A path
+    if st.session_state.get("pending_query"):
+        from rag_backend import answer_query
+        q = st.session_state.pending_query
+        st.session_state.pending_query = ""
+        res = answer_query(q)
+        ans = (res.get("answer") or "").strip()
+        used_rag = bool(res.get("used_rag"))
+        sources = res.get("sources") or []
+        meta = "Answer grounded in uploaded context ✅" if used_rag else "General knowledge fallback ⚠️"
+
+        # Replace loader
+        if st.session_state.messages and st.session_state.messages[-1].get("role") == "assistant":
+            st.session_state.messages[-1] = {
+                "role": "assistant", "content": ans, "meta": meta, "sources": sources
+            }
+        else:
+            st.session_state.messages.append({"role": "assistant", "content": ans, "meta": meta, "sources": sources})
+
+        st.rerun()
+
+    # Flow path (remittance / financial), run one flow step now
+    flow_name = st.session_state.get("pending_flow")
+    flow_input = st.session_state.get("flow_pending_input", "")
+    if flow_name and flow_input:
+        # import here to avoid circulars at import time
+        from flows.remittance_flow import handle_remittance_turn
+        from flows.financial_flow import handle_financial_turn
+
+        if flow_name == "remittance":
+            out = handle_remittance_turn(flow_input, st.session_state)
+        elif flow_name == "financial":
+            out = handle_financial_turn(flow_input, st.session_state)
+        elif flow_name == "scam":
+            out = handle_scam_turn(flow_input, st.session_state)
+        else:
+            out = {"text": "Okay, ending current flow. Ask me anything else.", "used_backend": False, "used_rag": False, "sources": [], "done": True}
+            st.session_state.flow = None
+            st.session_state.flow_state = None
+
+        meta = "Flow: Guidance" if not out.get("used_backend") else (
+            "Answer grounded in uploaded context ✅" if out.get("used_rag") else "General knowledge fallback ⚠️"
+        )
+
+        # Replace loader with flow output
+        if st.session_state.messages and st.session_state.messages[-1].get("role") == "assistant":
+            st.session_state.messages[-1] = {"role": "assistant", "content": out.get("text",""), "meta": meta, "sources": out.get("sources", [])}
+        else:
+            st.session_state.messages.append({"role": "assistant", "content": out.get("text",""), "meta": meta, "sources": out.get("sources", [])})
+
+        # Clear pending flags
+        st.session_state.pending_flow = None
+        st.session_state.flow_pending_input = ""
+
+        # End flow if done
+        if out.get("done"):
+            st.session_state.flow = None
+            st.session_state.flow_state = None
+
+        st.rerun()
+
 # No sidebar; session messages
 if "messages" not in st.session_state:
     st.session_state.messages = []  # [{role, content, meta, sources}]
+
+if "flow" not in st.session_state:
+    st.session_state.flow = None          # "remittance" | "financial" | None
+if "flow_state" not in st.session_state:
+    st.session_state.flow_state = None
 
 # Header + clear
 c1, c2 = st.columns([6, 1])
@@ -41,7 +125,7 @@ with c1:
 with c2:
     if st.button("Clear", help="Clear this conversation"):
         st.session_state.messages = []
-        st.experimental_rerun()
+        st.rerun()
 
 # ---------- conversation renderer ----------
 def render_messages_html(messages):
@@ -52,7 +136,8 @@ def render_messages_html(messages):
         meta = m.get("meta", "")
         sources = m.get("sources", [])
         klass = "user" if role == "user" else "bot"
-        bubble = f'<div class="bubble {klass}">{content}</div>'
+        html_content = md.markdown(content, extensions=["extra", "sane_lists"])
+        bubble = f'<div class="bubble {klass}">{html_content}</div>'
         meta_line = f'<div class="meta">{meta}</div>' if meta else ""
         src_line = ""
         if role == "assistant" and sources:
@@ -78,30 +163,111 @@ final_html = template_html.replace("{{MESSAGES_HTML}}", messages_html)
 components.html(final_html, height=720, scrolling=True)
 
 # ---------- INPUT AT THE BOTTOM (Form = Enter submits) ----------
+# --- FORM SUBMIT (bottom) ---
 with st.form("chat_form", clear_on_submit=True):
     user_input = st.text_input(
         "Type your question (press Enter to send)",
         key="chatbox",
-        placeholder="e.g., What documents are required for an S Pass application?"
+        placeholder="e.g., How to send money to Vietnam?"
     )
     submitted = st.form_submit_button("Send", type="primary")
 
 if submitted and user_input.strip():
     ui_q = user_input.strip()
 
-    # 1) append user
+    # 1) Show user message immediately
     st.session_state.messages.append({"role": "user", "content": ui_q, "meta": "", "sources": []})
 
-    # 2) backend answer
-    res = answer_query(ui_q)
-    ans = (res.get("answer") or "").strip()
-    used_rag = bool(res.get("used_rag"))
-    sources = res.get("sources") or []
-    meta = "Answer grounded in uploaded context ✅" if used_rag else "General knowledge fallback ⚠️"
+    # 2) FLOW ROUTING comes BEFORE any backend scheduling
+    from flows.remittance_flow import is_remittance_intent, reset_remittance_state
+    from flows.financial_flow import is_financial_intent, reset_financial_state
 
-    # 3) append assistant
-    st.session_state.messages.append({"role": "assistant", "content": ans, "meta": meta, "sources": sources})
+    # If there is no active flow, try to start one
+    if not st.session_state.get("flow"):
+        if is_remittance_intent(ui_q):
+            first_msg = reset_remittance_state(st.session_state)
+            st.session_state.messages.append({"role": "assistant", "content": first_msg, "meta": "Flow: Remittance", "sources": []})
+            st.rerun()
 
-    # 4) refresh so the top conversation updates immediately
-    st.rerun()
+        elif is_financial_intent(ui_q):
+            first_msg = reset_financial_state(st.session_state)
+            st.session_state.messages.append({"role": "assistant", "content": first_msg, "meta": "Flow: Financial Planning", "sources": []})
+            st.rerun()
+
+        elif is_scam_intent(ui_q):  
+            first_msg = reset_scam_state(st.session_state)
+            st.session_state.messages.append({"role": "assistant", "content": first_msg, "meta": "Flow: Scam Safety", "sources": []})
+            st.rerun()
+
+        # No flow matched → plain Q&A with loader
+        else:
+            typing_html = "<span class='dot-flashing' aria-label='typing'></span> Thinking…"
+            st.session_state.messages.append({"role": "assistant", "content": typing_html, "meta": "Thinking…", "sources": []})
+            st.session_state.pending_query = ui_q
+            st.session_state.run_backend = True
+            st.rerun()
+
+    # 3) A flow IS active → schedule the flow step with a loader
+    else:
+        typing_html = "<span class='dot-flashing' aria-label='typing'></span> Thinking…"
+        st.session_state.messages.append({"role": "assistant", "content": typing_html, "meta": "Thinking…", "sources": []})
+        st.session_state.pending_flow = st.session_state.flow
+        st.session_state.flow_pending_input = ui_q
+        st.session_state.run_backend = True
+        st.rerun()
+
+
+
+if submitted and user_input.strip():
+    ui_q = user_input.strip()
+    # 1) Append user message
+    st.session_state.messages.append({"role": "user", "content": ui_q, "meta": "", "sources": []})
+
+    # 2) If no active flow, detect & start one; else route to active flow
+    if not st.session_state.flow:
+        if is_remittance_intent(ui_q):
+            # start remittance flow
+            first_msg = reset_remittance_state(st.session_state)
+            st.session_state.messages.append({"role": "assistant", "content": first_msg, "meta": "Flow: Remittance", "sources": []})
+            st.rerun()
+
+        elif is_financial_intent(ui_q):
+            # start financial flow
+            first_msg = reset_financial_state(st.session_state)
+            st.session_state.messages.append({"role": "assistant", "content": first_msg, "meta": "Flow: Financial Planning", "sources": []})
+            st.rerun()
+
+        else:
+            # no flow detected => fallback to your normal backend Q&A
+            from rag_backend import answer_query
+            res = answer_query(ui_q)
+            ans = (res.get("answer") or "").strip()
+            used_rag = bool(res.get("used_rag"))
+            sources = res.get("sources") or []
+            meta = "Answer grounded in uploaded context ✅" if used_rag else "General knowledge fallback ⚠️"
+            st.session_state.messages.append({"role": "assistant", "content": ans, "meta": meta, "sources": sources})
+            st.rerun()
+
+    else:
+        # Active flow
+        if st.session_state.flow == "remittance":
+            out = handle_remittance_turn(ui_q, st.session_state)
+        elif st.session_state.flow == "financial":
+            out = handle_financial_turn(ui_q, st.session_state)
+        else:
+            out = {"text": "Okay, ending current flow. Ask me anything else.", "used_backend": False, "used_rag": False, "sources": [], "done": True}
+            st.session_state.flow = None
+
+        meta = "Flow: Guidance" if not out.get("used_backend") else (
+            "Answer grounded in uploaded context ✅" if out.get("used_rag") else "General knowledge fallback ⚠️"
+        )
+        st.session_state.messages.append({"role": "assistant", "content": out.get("text",""), "meta": meta, "sources": out.get("sources", [])})
+
+        # If flow done, clear it
+        if out.get("done"):
+            st.session_state.flow = None
+            st.session_state.flow_state = None
+
+        st.rerun()
+
 

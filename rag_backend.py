@@ -128,14 +128,16 @@ def make_rag_prompt_strict(context_text: str, answer_lang_code: str):
     lang_name = SUPPORTED_LANGS.get(answer_lang_code, "the user's language")
     return (
         "You are helping immigrants in Singapore. Follow these STRICT rules:\n"
-        "1) Use ONLY the provided CONTEXT below for all facts. If a detail is not in CONTEXT, you must not infer it.\n"
-        "2) For EP/S Pass topics, answer what the document actually covers (e.g., supporting documents) unless steps are explicitly present.\n"
-        f"3) If CONTEXT is insufficient, respond EXACTLY with: {NOT_FOUND_TOKEN}\n"
-        '4) Include at least one short quote from CONTEXT in double quotes to show grounding.\n'
-        "5) Be concise, precise. Cite filenames inline like [filename]. No invented links/numbers.\n\n"
+        "1) Use ONLY the provided CONTEXT below for all facts. If a detail is not in CONTEXT, do not infer it.\n"
+        "2) If the user's request is outside the scope of the CONTEXT, or the CONTEXT is insufficient to answer exactly, "
+        f"respond EXACTLY with: {NOT_FOUND_TOKEN} (no extra words).\n"
+        "3) For EP/S Pass topics, answer only what the document actually covers (e.g., supporting documents) unless steps are explicitly present.\n"
+        '4) If you do answer, include at least one short quote from CONTEXT in double quotes to show grounding.\n'
+        "5) Be concise and precise. Cite filenames inline like [filename]. No invented links or numbers.\n\n"
         f"Answer in {lang_name}.\n\n"
         f"CONTEXT:\n{context_text}\n"
     )
+
 
 def make_general_prompt(answer_lang_code: str):
     lang = SUPPORTED_LANGS.get(answer_lang_code, "the user's language")
@@ -146,7 +148,11 @@ def make_general_prompt(answer_lang_code: str):
         "Avoid hallucinating links or specific numbers if unsure."
     )
 
-def answer_query(user_raw: str) -> dict:
+def answer_query(
+    user_raw: str,
+    require_keywords: tuple[str, ...] = (),
+    force_general: bool = False
+) -> dict:
     """
     Returns a dict:
     {
@@ -164,29 +170,84 @@ def answer_query(user_raw: str) -> dict:
         except Exception as e:
             print(f"[translate warn] {e}; using original text.")
 
+    # 1) Retrieve
     ctx_chunks, srcs = retrieve_context(query_for_retrieval, TOP_K)
 
-    # Focus EP/S Pass sections if query hints
-    focus_terms, ur_low = [], user_raw.lower()
-    if "s pass" in ur_low or "spass" in ur_low or " s-pass" in ur_low:
-        focus_terms += ["s pass", "employment pass", "ep"]
-    if "employment pass" in ur_low or (" ep " in f" {ur_low} "):
-        focus_terms += ["employment pass", "ep", "s pass"]
-    if focus_terms:
-        ctx_chunks = filter_context(ctx_chunks, include_any=tuple(set(focus_terms)))
+    # 2) OPTIONAL GATE: caller can require certain keywords to appear in retrieved chunks
+    #    - If require_keywords is provided and none of the chunks contain them -> disable RAG (force fallback)
+    #    - If force_general is True -> disable RAG regardless of retrieval
+    if force_general:
+        ctx_chunks = []
+    elif require_keywords:
+        # filter_context keeps only chunks containing ANY of the keywords; returns original if none match,
+        # so we must manually empty when there's no match to force fallback.
+        filtered = filter_context(ctx_chunks, include_any=tuple(k.lower() for k in require_keywords))
+        # Detect "no match" by checking if filtered == original but none of the keywords are in any chunk.
+        if filtered is ctx_chunks:
+            # verify no keyword present at all
+            any_hit = any(
+                any(k.lower() in (c or "").lower() for k in require_keywords)
+                for c in ctx_chunks
+            )
+            if not any_hit:
+                ctx_chunks = []  # nothing relevant -> skip RAG
+        else:
+            ctx_chunks = filtered
+
+    # 3) EP/S Pass focusing (only for the pass domain; avoid biasing other domains like scams)
+    if not force_general and not require_keywords:
+        focus_terms, ur_low = [], user_raw.lower()
+        if "s pass" in ur_low or "spass" in ur_low or " s-pass" in ur_low:
+            focus_terms += ["s pass", "employment pass", "ep"]
+        if "employment pass" in ur_low or (" ep " in f" {ur_low} "):
+            focus_terms += ["employment pass", "ep", "s pass"]
+        if focus_terms:
+            ctx_chunks = filter_context(ctx_chunks, include_any=tuple(set(focus_terms)))
 
     context = clamp_context(ctx_chunks, max_chars=48000)
 
-    # STRICT RAG pass
+    # 4) STRICT RAG pass (only if we still have context after the gate)
     used_rag = False
     if ctx_chunks:
         sys_prompt = make_rag_prompt_strict(context, user_lang)
         rag_msgs = [{"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_raw}]
         rag_ans = _sealion_chat(rag_msgs, temperature=0.0, max_tokens=1024)
-        if rag_ans.strip() and rag_ans.strip() != NOT_FOUND_TOKEN:
-            used_rag = True
-            return {"answer": rag_ans.strip(), "used_rag": True, "sources": srcs, "fallback_used": False}
+        if rag_ans:
+            text = rag_ans.strip()
+
+            # Treat common "refusal/explanation" patterns as NOT_FOUND, so we fall back.
+            refusal_patterns = (
+                "does not contain", "not contain information",
+                "outside the scope", "not present in the context",
+                "context focuses on", "cannot find", "insufficient",
+                "<<>>", "<>",  # any placeholder noise
+            )
+            looks_like_refusal = any(pat in text.lower() for pat in refusal_patterns)
+
+            if text != NOT_FOUND_TOKEN and not looks_like_refusal:
+                used_rag = True
+                return {"answer": text, "used_rag": True, "sources": srcs, "fallback_used": False}
+
+    # 5) Fallback (general knowledge)
+    general_sys = make_general_prompt(user_lang)
+    gen_msgs = [{"role": "system", "content": general_sys}, {"role": "user", "content": user_raw}]
+    general_reply = _sealion_chat(gen_msgs, temperature=0.2, max_tokens=1024)
+    fallback_notice = ""
+    if ctx_chunks:  # we had context but chose not to use it (or it wasn't sufficient)
+        fallback_notice = (
+            "\n⚠️ *Fallback Notice:*\n"
+            "The uploaded context did not contain enough information to fully answer your question.\n"
+            "Here’s a **general overview** based on public knowledge instead:\n\n"
+        )
+    return {
+        "answer": fallback_notice + general_reply,
+        "used_rag": False,
+        "sources": srcs,
+        "fallback_used": True
+    }
+
+
 
     # Fallback
     general_sys = make_general_prompt(user_lang)
