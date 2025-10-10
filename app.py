@@ -6,6 +6,20 @@ from dotenv import load_dotenv
 
 from rag_backend import answer_query  # backend function
 
+def _apply_secrets_to_env():
+    try:
+        # st.secrets is a toml-like dict; flatten one level if needed
+        for k, v in st.secrets.items():
+            if isinstance(v, (str, int, float, bool)):
+                os.environ[str(k)] = str(v)
+            elif isinstance(v, dict):
+                for kk, vv in v.items():
+                    os.environ[str(kk)] = str(vv)
+    except Exception:
+        pass  # running locally without st.secrets
+
+_apply_secrets_to_env()
+
 load_dotenv()
 st.set_page_config(page_title="SG RAG Chat", page_icon="🇸🇬", layout="wide")
 
