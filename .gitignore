@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+.env
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Streamlit cache
+.streamlit/
