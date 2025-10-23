@@ -163,12 +163,68 @@ final_html = template_html.replace("{{MESSAGES_HTML}}", messages_html)
 components.html(final_html, height=720, scrolling=True)
 
 # ---------- INPUT AT THE BOTTOM (Form = Enter submits) ----------
+# ---------- QUICK ACTION BUTTONS ----------
+st.markdown(
+    """
+    <style>
+    /* Adjust button appearance */
+    .stButton>button {
+        width: 100%;
+        border-radius: 100px;
+        font-weight: 600;
+        font-size: 15px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown("#### Quick Actions")
+cols = st.columns(3, gap="small")
+
+# Each button label, message, and optional emoji
+quick_actions = [
+    ("💰 Finance", "I want to ask about finance related issues."),
+    ("💸 Remittance", "I want to send money overseas."),
+    ("🚨 Scam", "I think I might be a victim of a scam.")
+]
+
+for i, (label, msg) in enumerate(quick_actions):
+    with cols[i]:
+        if st.button(label, key=f"btn_{label}"):
+            # Append user message
+            st.session_state.messages.append({"role": "user", "content": msg, "meta": "", "sources": []})
+
+            # Reuse your existing flow detection logic
+            from flows.remittance_flow import is_remittance_intent, reset_remittance_state
+            from flows.financial_flow import is_financial_intent, reset_financial_state
+            from flows.scam_flow import is_scam_intent, reset_scam_state
+
+            if is_remittance_intent(msg):
+                first_msg = reset_remittance_state(st.session_state)
+                st.session_state.messages.append({"role": "assistant", "content": first_msg, "meta": "Flow: Remittance", "sources": []})
+                st.rerun()
+            elif is_financial_intent(msg):
+                first_msg = reset_financial_state(st.session_state)
+                st.session_state.messages.append({"role": "assistant", "content": first_msg, "meta": "Flow: Financial Planning", "sources": []})
+                st.rerun()
+            elif is_scam_intent(msg):
+                first_msg = reset_scam_state(st.session_state)
+                st.session_state.messages.append({"role": "assistant", "content": first_msg, "meta": "Flow: Scam Safety", "sources": []})
+                st.rerun()
+            else:
+                # Fallback to normal backend Q&A
+                st.session_state.pending_query = msg
+                st.session_state.run_backend = True
+                st.rerun()
+
+
 # --- FORM SUBMIT (bottom) ---
 with st.form("chat_form", clear_on_submit=True):
     user_input = st.text_input(
         "Type your question (press Enter to send)",
         key="chatbox",
-        placeholder="e.g., How to send money to Vietnam?"
+        placeholder="Ask Anything"
     )
     submitted = st.form_submit_button("Send", type="primary")
 
