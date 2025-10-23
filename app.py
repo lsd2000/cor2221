@@ -39,7 +39,25 @@ st.set_page_config(page_title="SG RAG Chat", page_icon="🇸🇬", layout="wide"
 # push content down so the toolbar doesn't overlap
 st.markdown("""
 <style>
-  .block-container {max-width: 1400px; padding-top: 4.5rem; padding-bottom: 0.5rem;}
+  .block-container {max-width: 1400px;}
+  .stVerticalBlock {
+      margin: 0 !important;
+      padding: 0 !important;
+      gap: 0 !important;   /* remove spacing between children */
+  div[data-testid="stLayoutWrapper"] {
+    padding-top: 4px;    /* adjust top padding */
+    padding-bottom: 4px; /* adjust bottom padding */
+}
+    div[data-testid="stFormSubmitButton"] {
+    display: none !important;        
+}
+    label[for="text_input_1"] {
+    display: none;
+    }
+div[data-testid="stAppIframeResizerAnchor"] {
+        display: none;
+    }
+            
 </style>
 """, unsafe_allow_html=True)
 
@@ -122,6 +140,12 @@ if "flow_state" not in st.session_state:
 c1, c2 = st.columns([6, 1])
 with c1:
     st.markdown("### Singapore Integration Assistant (RAG-first)")
+    st.markdown(
+        """
+        <hr style="margin:0; border:1px solid #888;">
+        """,
+        unsafe_allow_html=True
+    )
 with c2:
     if st.button("Clear", help="Clear this conversation"):
         st.session_state.messages = []
@@ -160,7 +184,7 @@ messages_html = render_messages_html(st.session_state.messages)
 final_html = template_html.replace("{{MESSAGES_HTML}}", messages_html)
 
 # Show conversation
-components.html(final_html, height=720, scrolling=True)
+components.html(final_html, height=500, scrolling=True)
 
 # ---------- INPUT AT THE BOTTOM (Form = Enter submits) ----------
 # ---------- QUICK ACTION BUTTONS ----------
@@ -179,7 +203,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.markdown("#### Quick Actions")
 cols = st.columns(3, gap="small")
 
 # Each button label, message, and optional emoji
@@ -188,6 +211,8 @@ quick_actions = [
     ("💸 Remittance", "I want to send money overseas."),
     ("🚨 Scam", "I think I might be a victim of a scam.")
 ]
+
+cols = st.columns([0.1, 0.12, 0.12,0.7])  # last column is empty for spacing
 
 for i, (label, msg) in enumerate(quick_actions):
     with cols[i]:
@@ -224,7 +249,7 @@ with st.form("chat_form", clear_on_submit=True):
     user_input = st.text_input(
         "Type your question (press Enter to send)",
         key="chatbox",
-        placeholder="Ask Anything"
+        placeholder="Ask Anything...",
     )
     submitted = st.form_submit_button("Send", type="primary")
 
