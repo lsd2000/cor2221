@@ -245,13 +245,51 @@ for i, (label, msg) in enumerate(quick_actions):
 
 
 # --- FORM SUBMIT (bottom) ---
-with st.form("chat_form", clear_on_submit=True):
-    user_input = st.text_input(
-        "Type your question (press Enter to send)",
-        key="chatbox",
-        placeholder="Ask Anything...",
-    )
-    submitted = st.form_submit_button("Send", type="primary")
+import streamlit as st
+import streamlit.components.v1 as components
+
+col_input, col_button = st.columns([9, 1])
+
+with col_input:
+    with st.form("chat_form", clear_on_submit=True):
+        user_input = st.text_input(
+            "", 
+            key="chatbox",
+            placeholder="Ask Anything..."
+        )
+        # Hidden submit
+        submitted = st.form_submit_button("Send", type="primary", key="hidden_submit")
+
+with col_button:
+    components.html("""
+    <div style="height:100%; display:flex; align-items:center;">
+        <button id="customSend" style="
+            padding: 8px 16px; 
+            margin-top:15px;
+            border-radius: 12px; 
+            font-weight: 600;
+            font-size: 14px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            width: 100%;
+        ">Send</button>
+    </div>
+
+    <script>
+    setTimeout(() => {
+        const hiddenSubmit = window.parent.document.querySelector('div[data-testid="stFormSubmitButton"] button');
+        const customButton = document.getElementById("customSend");
+
+        customButton.onclick = () => {
+            if(hiddenSubmit){
+                hiddenSubmit.click();  // trigger the hidden Streamlit submit button
+            }
+        }
+    }, 500);  // wait a bit to ensure the button exists
+    </script>
+    """, height=100)
 
 if submitted and user_input.strip():
     ui_q = user_input.strip()
