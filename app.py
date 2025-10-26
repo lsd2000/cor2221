@@ -207,7 +207,7 @@ cols = st.columns(3, gap="small")
 
 # Each button label, message, and optional emoji
 quick_actions = [
-    ("💰 Finance", "I want to ask about finance related issues."),
+    ("💰 Finance", "I want to ask about financial planning."),
     ("💸 Remittance", "I want to send money overseas."),
     ("🚨 Scam", "I think I might be a victim of a scam.")
 ]
