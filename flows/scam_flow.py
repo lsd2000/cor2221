@@ -3,7 +3,12 @@ import re
 from typing import Dict, Any
 from rag_backend import answer_query
 
-# --- Intent detection ---
+"""
+Scam safety flow aligned to your corpus:
+- Prefers grounding from 'mw handy guide english' and remittance/payments guides
+  when they include anti-scam or safety sections.
+"""
+
 SCAM_INTENT_PATTERNS = [
     r"\b(scam|scammer|suspicious|fraud|cheat(ed)?|fake|impersonat(e|or)|phishing)\b",
     r"\b(loan shark|ah long|moneylender scam|job scam|love scam|investment scam)\b",
@@ -13,18 +18,11 @@ SCAM_INTENT_PATTERNS = [
     r"\b(suspect|not sure|too good to be true)\b",
 ]
 
-def is_scam_intent(text: str) -> bool:
-    if not text:
-        return False
-    low = text.lower()
-    return any(re.search(pat, low) for pat in SCAM_INTENT_PATTERNS)
-
-# --- Simple FSM states ---
-ASK_SCENARIO   = "ask_scenario"     # what happened?
-ASK_CHANNEL    = "ask_channel"      # where did it happen? (SMS/WhatsApp/Call/Web/Agent)
-ASK_REQUESTS   = "ask_requests"     # what did they ask from you? (money/OTP/ID)
-SUMMARIZE_RISK = "summarize_risk"   # call backend for tailored guidance
-PROVIDE_STEPS  = "provide_steps"    # show concrete steps; offer reporting
+ASK_SCENARIO   = "ask_scenario"
+ASK_CHANNEL    = "ask_channel"
+ASK_REQUESTS   = "ask_requests"
+SUMMARIZE_RISK = "summarize_risk"
+PROVIDE_STEPS  = "provide_steps"
 DONE           = "done"
 
 CHANNEL_MAP = {
@@ -52,6 +50,24 @@ REQUEST_KEYWORDS = [
     "nric", "passport", "work permit", "bank details", "account number"
 ]
 
+# Prefer these docs if they have safety sections
+_DOC_KEYS = (
+    "mw handy guide english",
+    "eremittance guide to sending money home safely",
+    "your guide to paylah",
+    "transfer funds using dbs paylah",
+    "financial institution directory",
+    # topic anchors
+    "scam", "fraud", "phishing", "impersonation", "verify", "official",
+    "otp", "password", "deposit", "upfront fee", "processing fee", "work permit"
+)
+
+def is_scam_intent(text: str) -> bool:
+    if not text:
+        return False
+    low = text.lower()
+    return any(re.search(pat, low) for pat in SCAM_INTENT_PATTERNS)
+
 def reset_scam_state(state: Dict[str, Any]) -> str:
     state["flow"] = "scam"
     state["flow_state"] = ASK_SCENARIO
@@ -76,27 +92,18 @@ def _extract_requests(text: str) -> list[str]:
     for k in REQUEST_KEYWORDS:
         if k in low:
             hits.append(k)
-    # capture money amounts if any
     amounts = re.findall(r"\b(?:sgd|s\$|\$)?\s?\d{1,4}(?:[.,]\d{2})?\b", low)
     if amounts:
         hits.extend([a.strip() for a in amounts])
-    return list(dict.fromkeys(hits))  # dedupe, keep order
+    return list(dict.fromkeys(hits))  # dedupe, preserve order
 
 def handle_scam_turn(user_text: str, state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Returns dict:
-      {
-        "text": str,
-        "used_backend": bool,
-        "used_rag": bool,
-        "sources": list[str],
-        "done": bool
-      }
+    Returns dict: { text, used_backend, used_rag, sources, done }
     """
     cur = state.get("flow_state", ASK_SCENARIO)
     user = (user_text or "").strip()
 
-    # Step 1: Scenario
     if cur == ASK_SCENARIO:
         if not user:
             return {
@@ -110,7 +117,6 @@ def handle_scam_turn(user_text: str, state: Dict[str, Any]) -> Dict[str, Any]:
             "used_backend": False, "used_rag": False, "sources": [], "done": False
         }
 
-    # Step 2: Channel
     if cur == ASK_CHANNEL:
         ch = _normalize_channel(user)
         if not ch:
@@ -121,38 +127,31 @@ def handle_scam_turn(user_text: str, state: Dict[str, Any]) -> Dict[str, Any]:
         state["scam_channel"] = ch
         state["flow_state"] = ASK_REQUESTS
         return {
-            "text": f"Thanks. Did they ask for anything like **money (upfront/fees)**, **bank details**, or your **OTP/passport**? "
-                    "Feel free to paste exact wording. If nothing specific, you can say **not sure**.",
+            "text": (
+                "Thanks. Did they ask for anything like **money (upfront/fees)**, **bank details**, or your **OTP/passport**? "
+                "Feel free to paste exact wording. If nothing specific, you can say **not sure**."
+            ),
             "used_backend": False, "used_rag": False, "sources": [], "done": False
         }
 
-    # Step 3: Requests they asked for
     if cur == ASK_REQUESTS:
         hits = _extract_requests(user)
         state["scam_requests"] = hits or (["not sure"] if user.lower() == "not sure" else [])
         state["flow_state"] = SUMMARIZE_RISK
 
-    # Step 4: Summarize risk (use backend to produce tailored guidance)
     if state.get("flow_state") == SUMMARIZE_RISK:
         scenario = state.get("scam_scenario") or ""
         channel  = state.get("scam_channel") or "Unknown channel"
         requests = ", ".join(state.get("scam_requests") or []) or "No specific requests"
-        # Focus the backend on scam safety guidance. It will use RAG if present, else general fallback.
         query = (
             "Scam safety check for a migrant worker in Singapore. "
             f"Channel: {channel}. Key details: {scenario}. Requests mentioned: {requests}. "
-            "Identify red flags in bullet points, then give clear DO/DON'T steps in simple English. "
+            "Identify **red flags** in bullet points, then give clear **DO/DON'T** steps in simple English. "
             "Emphasize: do not share OTP/password, do not pay upfront fees or deposits to strangers, "
-            "verify with official channels directly, and stop contact if pressured."
+            "verify with official channels directly, and stop contact if pressured. "
+            "Use uploaded context where relevant, for example 'mw handy guide english' or remittance/payment guides."
         )
-        res = answer_query(
-    query,
-    require_keywords=(
-        "scam","fraud","phishing","impersonation","anti-scam","report",
-        "police","otp","password","upfront fee","deposit","processing fee",
-        "bank details","account number"
-    )
-)
+        res = answer_query(query, require_keywords=_DOC_KEYS)
 
         state["flow_state"] = PROVIDE_STEPS
         text = (
@@ -166,15 +165,13 @@ def handle_scam_turn(user_text: str, state: Dict[str, Any]) -> Dict[str, Any]:
             "done": False
         }
 
-    # Step 5: Provide reporting steps (general guidance, no specific phone numbers here)
     if state.get("flow_state") == PROVIDE_STEPS:
         if user.lower() in ("yes", "y", "yeah", "ok", "okay", "sure"):
-            # Keep high-level but practical, without hardcoding numbers/URLs
             tips = (
                 "Here are safe next steps:\n\n"
                 "1) **Stop contact** with the sender/caller. Do not click links or scan QR codes.\n"
                 "2) **Do not share** OTP, passwords, banking details, or ID images.\n"
-                "3) **Verify independently** with official sources (e.g., visit the agency/bank’s official site or hotline from their official page).\n"
+                "3) **Verify independently** with official sources (visit the agency/bank’s official site or hotline from their official page).\n"
                 "4) **Document** the evidence (screenshots, phone numbers, usernames) in case you need to report.\n"
                 "5) **Report** through official Singapore channels (e.g., national anti-scam resources or the police e-services portal). "
                 "Use only contacts listed on the official websites.\n"
@@ -194,7 +191,6 @@ def handle_scam_turn(user_text: str, state: Dict[str, Any]) -> Dict[str, Any]:
                 "used_backend": False, "used_rag": False, "sources": [], "done": True
             }
 
-    # Fallback
     state["flow_state"] = DONE
     state["flow"] = None
     return {"text": "Okay, ending this safety check. Ask me anything else.", "used_backend": False, "used_rag": False, "sources": [], "done": True}

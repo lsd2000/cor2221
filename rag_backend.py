@@ -131,22 +131,12 @@ def make_rag_prompt_strict(context_text: str, answer_lang_code: str):
         "1) Use ONLY the provided CONTEXT below for all facts. If a detail is not in CONTEXT, do not infer it.\n"
         "2) If the user's request is outside the scope of the CONTEXT, or the CONTEXT is insufficient to answer exactly, "
         f"respond EXACTLY with: {NOT_FOUND_TOKEN} (no extra words).\n"
-        "3) For EP/S Pass topics, answer only what the document actually covers (e.g., supporting documents) unless steps are explicitly present.\n"
-        '4) If you do answer, include at least one short quote from CONTEXT in double quotes to show grounding.\n'
-        "5) Be concise and precise. Cite filenames inline like [filename]. No invented links or numbers.\n\n"
+        '3) If you do answer, include at least one short quote from CONTEXT in double quotes to show grounding.\n'
+        "4) Be concise and precise. Cite filenames inline like [filename]. No invented links or numbers.\n\n"
         f"Answer in {lang_name}.\n\n"
         f"CONTEXT:\n{context_text}\n"
     )
 
-
-def make_general_prompt(answer_lang_code: str):
-    lang = SUPPORTED_LANGS.get(answer_lang_code, "the user's language")
-    return (
-        "You are a helpful, concise assistant. "
-        f"Answer in {lang}. "
-        "For Singapore immigration/work passes, you may give general guidance and suggest checking ICA/MOM. "
-        "Avoid hallucinating links or specific numbers if unsure."
-    )
 
 def answer_query(
     user_raw: str,
